@@ -83,16 +83,21 @@ func ARPScan(networkInterface string) ([]MachineInfo, error) {
 
 	client.SetReadDeadline(time.Now().Add(5 * time.Second))
 
-	machines := make([]MachineInfo, 0)
-
+	temp := map[netip.Addr]MachineInfo {}
+	
 	for {
 		packet, _, err := client.Read()
 		if err != nil { break }
-
-		machines = append(machines, MachineInfo{
-			Mac: packet.TargetHardwareAddr.String(),
-			Ip: packet.TargetIP.String(),
-		})
+		
+		temp[packet.SenderIP] = MachineInfo{
+			Mac: packet.SenderHardwareAddr.String(),
+			Ip: packet.SenderIP.String(),
+		}
+	}
+	
+	machines := make([]MachineInfo, 0, len(temp))
+	for k := range temp {
+		machines = append(machines, temp[k])
 	}
 
 	return machines, nil

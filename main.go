@@ -14,7 +14,7 @@ func getPort(defaultPort int) int {
 	if isSet {
 		newPort, err := strconv.Atoi(portEnv)
 		if err != nil {
-			log.Fatal("Invalid PORT, specify correctly or leave for default (3000).")
+			log.Fatalf("Invalid PORT, specify correctly or leave for default (%d).", defaultPort)
 		}
 		defaultPort = newPort
 	}

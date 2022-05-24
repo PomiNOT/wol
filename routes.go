@@ -11,17 +11,17 @@ import (
 func IndexPage(c *fiber.Ctx) error {
 	time := time.Now().Unix()
 
-	return c.JSON(fiber.Map {
-		"up": true,
+	return c.JSON(fiber.Map{
+		"up":        true,
 		"timestamp": time,
-		"app_name": c.App().Server().Name,
-		"message": fmt.Sprintf("WOL backend is up! Server's UNIX time is: %d", time),
+		"app_name":  c.App().Server().Name,
+		"message":   fmt.Sprintf("WOL backend is up! Server's UNIX time is: %d", time),
 	})
 }
 
 func WakeOnLan(c *fiber.Ctx) error {
-	machineInfo := MachineInfo {}
-	
+	machineInfo := MachineInfo{}
+
 	if err := c.BodyParser(&machineInfo); err != nil {
 		return fiber.ErrInternalServerError
 	}
@@ -36,7 +36,7 @@ func WakeOnLan(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.ErrBadRequest.Code, "MAC address is not valid")
 	}
 
-	return c.JSON(fiber.Map {
+	return c.JSON(fiber.Map{
 		"message": fmt.Sprintf("Waking up %s", machineInfo.Mac),
 	})
 }
@@ -45,7 +45,10 @@ func DiscoverMachines(c *fiber.Ctx) error {
 	ifName, ifSet := os.LookupEnv("IFACE")
 
 	if !ifSet {
-		return fiber.NewError(fiber.ErrInternalServerError.Code, "IFACE name is not set, please set this environment variable")
+		return fiber.NewError(
+			fiber.ErrInternalServerError.Code,
+			"IFACE name is not set, please set this environment variable",
+		)
 	}
 
 	machines, err := ARPScan(ifName)
@@ -54,7 +57,8 @@ func DiscoverMachines(c *fiber.Ctx) error {
 		return err
 	}
 
-	return c.JSON(fiber.Map {
+	return c.JSON(fiber.Map{
+		"count": len(machines),
 		"machines": machines,
 	})
 }
@@ -66,7 +70,7 @@ func ErrorHandler(c *fiber.Ctx, err error) error {
 		code = e.Code
 	}
 
-	return c.Status(code).JSON(fiber.Map {
+	return c.Status(code).JSON(fiber.Map{
 		"message": err.Error(),
 	})
 }

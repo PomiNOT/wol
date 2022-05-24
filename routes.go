@@ -6,7 +6,12 @@ import (
 	"time"
 
 	"github.com/gofiber/fiber/v2"
+	"github.com/mdlayher/wol"
 )
+
+type MachineInfoBody struct {
+	Mac string
+}
 
 func IndexPage(c *fiber.Ctx) error {
 	time := time.Now().Unix()
@@ -20,24 +25,38 @@ func IndexPage(c *fiber.Ctx) error {
 }
 
 func WakeOnLan(c *fiber.Ctx) error {
-	machineInfo := MachineInfo{}
+	ifName, ifSet := os.LookupEnv("IFACE")
 
-	if err := c.BodyParser(&machineInfo); err != nil {
-		return fiber.ErrInternalServerError
+	if !ifSet {
+		return fiber.NewError(
+			fiber.ErrInternalServerError.Code,
+			"IFACE name is not set, please set this environment variable",
+		)
 	}
 
-	validMac, err := machineInfo.validMac()
+	machineInfoBody := MachineInfoBody{}
 
-	if err != nil {
-		return fiber.ErrInternalServerError
+	if err := c.BodyParser(&machineInfoBody); err != nil {
+		return err
 	}
 
-	if !validMac {
-		return fiber.NewError(fiber.ErrBadRequest.Code, "MAC address is not valid")
-	}
+	machineInfo, err := NewMachineInfoFromBody(machineInfoBody)
+	if err != nil { return fiber.NewError(fiber.StatusBadRequest, "MAC address is not valid") }
+
+	ifaceInfo, err := GetInterfaceInfo(ifName)
+	if err != nil { return err }
+
+	client, err := wol.NewClient()
+	if err != nil { return err }
+
+	err = client.Wake(
+		fmt.Sprintf("%s:9", ifaceInfo.Broadcast.String()),
+		machineInfo.Mac,
+	)
+	if err != nil { return err }
 
 	return c.JSON(fiber.Map{
-		"message": fmt.Sprintf("Waking up %s", machineInfo.Mac),
+		"message": fmt.Sprintf("Sending wake-up message for %s to %s", machineInfo.Mac, ifaceInfo.Broadcast),
 	})
 }
 

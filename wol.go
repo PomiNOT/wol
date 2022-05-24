@@ -5,22 +5,29 @@ import (
 	"errors"
 	"net"
 	"net/netip"
-	"regexp"
-	"strings"
 	"time"
 
 	"github.com/mdlayher/arp"
 )
 
 type MachineInfo struct {
-	Mac string `json:"mac"`
-	Ip string `json:"ip"`
+	Mac net.HardwareAddr `json:"mac"`
+	Ipv4 netip.Addr `json:"ip"`
 }
 
-func (m *MachineInfo) validMac() (bool, error) {
-	lowerMac := strings.ToLower(m.Mac)
-	matched, err := regexp.Match("^([a-f0-9]{2}:){5}[a-f0-9]{2}$", []byte(lowerMac))
-	return matched, err
+func NewMachineInfoFromBody(body MachineInfoBody) (*MachineInfo, error) {
+	macAddr, err := net.ParseMAC(body.Mac)
+	if err != nil { return nil, err }
+
+	return &MachineInfo{
+		Mac: macAddr,
+	}, nil
+}
+
+type InterfaceInfo struct {
+	Addresses []netip.Addr
+	Interface *net.Interface
+	Broadcast netip.Addr
 }
 
 func getIpv4List(ipNet *net.IPNet) []netip.Addr {
@@ -38,22 +45,31 @@ func getIpv4List(ipNet *net.IPNet) []netip.Addr {
 	return ips
 }
 
-func getInterfaceInfo(networkInterface string) ([]netip.Addr, *net.Interface, error) {
+func getBroadcastAddress(ipNet *net.IPNet) netip.Addr {
+	broadcast := make([]byte, 4)
+	for i := 0; i < 4; i++ {
+		broadcast[i] = ipNet.IP[i] | ^ipNet.Mask[i]
+	}
+	addr, _ := netip.AddrFromSlice(broadcast)
+	return addr
+}
+
+func GetInterfaceInfo(networkInterface string) (*InterfaceInfo, error) {
 	iface, err := net.InterfaceByName(networkInterface)
-	if err != nil { return nil, nil, err }
+	if err != nil { return nil, err }
 
 	if iface.HardwareAddr == nil {
-		return nil, nil, errors.New("interface does not have a MAC address")
+		return nil, errors.New("interface does not have a MAC address")
 	}
 
 	addrs, err := iface.Addrs()
-	if err != nil { return nil, nil, err }
+	if err != nil { return nil, err }
 
 	var ipNet *net.IPNet = nil
 
 	for _, addr := range addrs {
 		ip, ipnet, err := net.ParseCIDR(addr.String())
-		if err != nil { return nil, nil, err }
+		if err != nil { return nil, err }
 
 		if ip.To4() != nil {
 			ipNet = ipnet
@@ -62,22 +78,27 @@ func getInterfaceInfo(networkInterface string) ([]netip.Addr, *net.Interface, er
 	}
 
 	if ipNet == nil {
-		return nil, nil, errors.New("no IPv4 addresses could be found")
+		return nil, errors.New("no IPv4 addresses could be found")
 	}
 
 	addresses := getIpv4List(ipNet)
+	ifaceInfo := &InterfaceInfo{
+		Addresses: addresses,
+		Interface: iface,
+		Broadcast: getBroadcastAddress(ipNet),
+	}
 
-	return addresses, iface, nil
+	return ifaceInfo, nil
 }
 
 func ARPScan(networkInterface string) ([]MachineInfo, error) {
-	addresses, iface, err := getInterfaceInfo(networkInterface)
+	ifaceInfo, err := GetInterfaceInfo(networkInterface)
 	if err != nil { return nil, err }
 
-	client, err := arp.Dial(iface)
+	client, err := arp.Dial(ifaceInfo.Interface)
 	if err != nil { return nil, err }
 
-	for _, addr := range addresses {
+	for _, addr := range ifaceInfo.Addresses {
 		client.Request(addr)
 	}
 
@@ -90,8 +111,8 @@ func ARPScan(networkInterface string) ([]MachineInfo, error) {
 		if err != nil { break }
 		
 		temp[packet.SenderIP] = MachineInfo{
-			Mac: packet.SenderHardwareAddr.String(),
-			Ip: packet.SenderIP.String(),
+			Mac: packet.SenderHardwareAddr,
+			Ipv4: packet.SenderIP,
 		}
 	}
 	

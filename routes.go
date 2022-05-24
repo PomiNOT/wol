@@ -2,17 +2,15 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
 )
 
-type MachineInfo struct {
-	Mac string
-}
-
 func IndexPage(c *fiber.Ctx) error {
 	time := time.Now().Unix()
+
 	return c.JSON(fiber.Map {
 		"up": true,
 		"timestamp": time,
@@ -22,12 +20,20 @@ func IndexPage(c *fiber.Ctx) error {
 }
 
 func WakeOnLan(c *fiber.Ctx) error {
-	machineInfo := MachineInfo{}
-	err := c.BodyParser(&machineInfo)
+	machineInfo := MachineInfo {}
+	
+	if err := c.BodyParser(&machineInfo); err != nil {
+		return fiber.ErrInternalServerError
+	}
+
+	validMac, err := machineInfo.validMac()
+
 	if err != nil {
-		return c.Status(400).JSON(fiber.Map {
-			"message": "Bad request!",
-		})
+		return fiber.ErrInternalServerError
+	}
+
+	if !validMac {
+		return fiber.NewError(fiber.ErrBadRequest.Code, "MAC address is not valid")
 	}
 
 	return c.JSON(fiber.Map {
@@ -35,8 +41,32 @@ func WakeOnLan(c *fiber.Ctx) error {
 	})
 }
 
-func NotFound(c *fiber.Ctx) error {
-	return c.Status(404).JSON(fiber.Map {
-		"message": "Route not found.",
+func DiscoverMachines(c *fiber.Ctx) error {
+	ifName, ifSet := os.LookupEnv("IFACE")
+
+	if !ifSet {
+		return fiber.NewError(fiber.ErrInternalServerError.Code, "IFACE name is not set, please set this environment variable")
+	}
+
+	machines, err := ARPScan(ifName)
+
+	if err != nil {
+		return err
+	}
+
+	return c.JSON(fiber.Map {
+		"machines": machines,
+	})
+}
+
+func ErrorHandler(c *fiber.Ctx, err error) error {
+	code := fiber.StatusInternalServerError
+
+	if e, ok := err.(*fiber.Error); ok {
+		code = e.Code
+	}
+
+	return c.Status(code).JSON(fiber.Map {
+		"message": err.Error(),
 	})
 }

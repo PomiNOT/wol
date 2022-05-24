@@ -26,11 +26,12 @@ func main() {
 	app := fiber.New(fiber.Config{
 		AppName: "WOL",
 		ServerHeader: "WOL Backend Server",
+		ErrorHandler: ErrorHandler,
 	})
 
 	app.Get("/", IndexPage)
+	app.Get("/discover", DiscoverMachines)
 	app.Post("/wake", WakeOnLan)
-	app.Use(NotFound)
 
 	log.Fatal(app.Listen(fmt.Sprintf(":%d", getPort(3000))))
 }

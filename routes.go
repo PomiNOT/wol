@@ -34,14 +34,11 @@ func WakeOnLan(c *fiber.Ctx) error {
 		)
 	}
 
-	machineInfoBody := MachineInfoBody{}
+	machineInfo := MachineInfo{}
 
-	if err := c.BodyParser(&machineInfoBody); err != nil {
-		return err
+	if err := c.BodyParser(&machineInfo); err != nil {
+		return fiber.NewError(fiber.ErrBadRequest.Code, "Invalid JSON body, check your MAC address")
 	}
-
-	machineInfo, err := NewMachineInfoFromBody(machineInfoBody)
-	if err != nil { return fiber.NewError(fiber.StatusBadRequest, "MAC address is not valid") }
 
 	ifaceInfo, err := GetInterfaceInfo(ifName)
 	if err != nil { return err }

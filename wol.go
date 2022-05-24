@@ -2,10 +2,12 @@ package main
 
 import (
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"net"
 	"net/netip"
 	"time"
+	"fmt"
 
 	"github.com/mdlayher/arp"
 )
@@ -15,14 +17,30 @@ type MachineInfo struct {
 	Ipv4 netip.Addr `json:"ip"`
 }
 
-func NewMachineInfoFromBody(body MachineInfoBody) (*MachineInfo, error) {
-	macAddr, err := net.ParseMAC(body.Mac)
-	if err != nil { return nil, err }
+func (m* MachineInfo) UnmarshalJSON(data []byte) error {
+	tmp := map[string]string {}
+	err := json.Unmarshal(data, &tmp)
+	if err != nil { return err }
 
-	return &MachineInfo{
-		Mac: macAddr,
-	}, nil
+	macAddr, err := net.ParseMAC(tmp["mac"])
+	if err != nil { return err }
+	m.Mac = macAddr
+
+	ipAddr := net.ParseIP(tmp["ip"])
+	if ipAddr != nil { 
+		netipAddr, _ := netip.AddrFromSlice(ipAddr)
+		m.Ipv4 = netipAddr
+	}
+
+	return nil
 }
+
+func (m *MachineInfo) MarshalJSON() ([]byte, error) {
+	return []byte(
+		fmt.Sprintf(`{"mac":"%s","ip":"%s"}`, m.Mac.String(), m.Ipv4.String()),
+	), nil
+}
+
 
 type InterfaceInfo struct {
 	Addresses []netip.Addr

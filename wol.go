@@ -1,33 +1,38 @@
 package main
 
 import (
-	"encoding/binary"
+	"bufio"
 	"encoding/json"
-	"errors"
+	"fmt"
+	"log"
 	"net"
 	"net/netip"
+	"sync"
 	"time"
-	"fmt"
 
 	"github.com/mdlayher/arp"
 )
 
 type MachineInfo struct {
-	Mac net.HardwareAddr `json:"mac"`
-	Ipv4 netip.Addr `json:"ip"`
+	Mac  net.HardwareAddr `json:"mac"`
+	Ipv4 netip.Addr       `json:"ip"`
 }
 
-func (m* MachineInfo) UnmarshalJSON(data []byte) error {
-	tmp := map[string]string {}
+func (m *MachineInfo) UnmarshalJSON(data []byte) error {
+	tmp := map[string]string{}
 	err := json.Unmarshal(data, &tmp)
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 
 	macAddr, err := net.ParseMAC(tmp["mac"])
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	m.Mac = macAddr
 
 	ipAddr := net.ParseIP(tmp["ip"])
-	if ipAddr != nil { 
+	if ipAddr != nil {
 		netipAddr, _ := netip.AddrFromSlice(ipAddr)
 		m.Ipv4 = netipAddr
 	}
@@ -41,103 +46,154 @@ func (m *MachineInfo) MarshalJSON() ([]byte, error) {
 	), nil
 }
 
+var existingScanners map[string]*ARPScanner
+var scannersMutex sync.Mutex
 
-type InterfaceInfo struct {
-	Addresses []netip.Addr
-	Interface *net.Interface
-	Broadcast netip.Addr
+type ARPScanner struct {
+	interfaceInfo    *InterfaceInfo
+	cache            map[string]*MachineInfo
+	client           *arp.Client
+	foundCh          chan *MachineInfo
+	accessMutex      sync.Mutex
+	waitCond         *sync.Cond
+	connectedClients uint
 }
 
-func getIpv4List(ipNet *net.IPNet) []netip.Addr {
-	ips := make([]netip.Addr, 0, 255)
-	p := binary.BigEndian.Uint32(ipNet.IP)
-	m := binary.BigEndian.Uint32(ipNet.Mask)
-	var host uint32 = 0
-
-	for ;host < ^m; host++ {
-		ip := make([]byte, 4)
-		binary.BigEndian.PutUint32(ip, p | host)
-		addr, _ := netip.AddrFromSlice(ip)
-		ips = append(ips, addr)
-	}
-	return ips
-}
-
-func getBroadcastAddress(ipNet *net.IPNet) netip.Addr {
-	broadcast := make([]byte, 4)
-	for i := 0; i < 4; i++ {
-		broadcast[i] = ipNet.IP[i] | ^ipNet.Mask[i]
-	}
-	addr, _ := netip.AddrFromSlice(broadcast)
-	return addr
-}
-
-func GetInterfaceInfo(networkInterface string) (*InterfaceInfo, error) {
-	iface, err := net.InterfaceByName(networkInterface)
-	if err != nil { return nil, err }
-
-	if iface.HardwareAddr == nil {
-		return nil, errors.New("interface does not have a MAC address")
-	}
-
-	addrs, err := iface.Addrs()
-	if err != nil { return nil, err }
-
-	var ipNet *net.IPNet = nil
-
-	for _, addr := range addrs {
-		ip, ipnet, err := net.ParseCIDR(addr.String())
-		if err != nil { return nil, err }
-
-		if ip.To4() != nil {
-			ipNet = ipnet
-			break
-		}
-	}
-
-	if ipNet == nil {
-		return nil, errors.New("no IPv4 addresses could be found")
-	}
-
-	addresses := getIpv4List(ipNet)
-	ifaceInfo := &InterfaceInfo{
-		Addresses: addresses,
-		Interface: iface,
-		Broadcast: getBroadcastAddress(ipNet),
-	}
-
-	return ifaceInfo, nil
-}
-
-func ARPScan(networkInterface string) ([]MachineInfo, error) {
+func ARPScannerNew(networkInterface string) (*ARPScanner, error) {
 	ifaceInfo, err := GetInterfaceInfo(networkInterface)
-	if err != nil { return nil, err }
+	if err != nil {
+		return nil, err
+	}
 
 	client, err := arp.Dial(ifaceInfo.Interface)
-	if err != nil { return nil, err }
-
-	for _, addr := range ifaceInfo.Addresses {
-		client.Request(addr)
+	if err != nil {
+		return nil, err
 	}
 
-	client.SetReadDeadline(time.Now().Add(5 * time.Second))
+	scanner := &ARPScanner{
+		interfaceInfo:    ifaceInfo,
+		cache:            make(map[string]*MachineInfo),
+		client:           client,
+		foundCh:          make(chan *MachineInfo),
+		connectedClients: 0,
+		accessMutex:      sync.Mutex{},
+	}
+	scanner.waitCond = sync.NewCond(&scanner.accessMutex)
 
-	temp := map[netip.Addr]MachineInfo {}
-	
+	go scanner.worker()
+
+	return scanner, nil
+}
+
+func (s *ARPScanner) worker() {
 	for {
-		packet, _, err := client.Read()
-		if err != nil { break }
-		
-		temp[packet.SenderIP] = MachineInfo{
-			Mac: packet.SenderHardwareAddr,
-			Ipv4: packet.SenderIP,
+		s.accessMutex.Lock()
+		for s.connectedClients == 0 {
+			log.Println("No listening clients, pausing worker...")
+			s.waitCond.Wait()
+		}
+		s.accessMutex.Unlock()
+
+		for _, addr := range s.interfaceInfo.Addresses {
+			s.client.Request(addr)
+		}
+
+		s.client.SetReadDeadline(time.Now().Add(10 * time.Second))
+
+		for {
+			packet, _, err := s.client.Read()
+			if err != nil {
+				break
+			}
+
+			machine := &MachineInfo{
+				Mac:  packet.SenderHardwareAddr,
+				Ipv4: packet.SenderIP,
+			}
+
+			s.accessMutex.Lock()
+
+			addrStr := packet.SenderHardwareAddr.String()
+			//Non blocking send
+			select {
+			case s.foundCh <- machine:
+			default:
+			}
+			s.cache[addrStr] = machine
+
+			s.accessMutex.Unlock()
 		}
 	}
-	
-	machines := make([]MachineInfo, 0, len(temp))
-	for k := range temp {
-		machines = append(machines, temp[k])
+}
+
+func (s *ARPScanner) StreamWriter() func(*bufio.Writer) {
+	s.accessMutex.Lock()
+	s.connectedClients++
+	log.Println("A device connected")
+
+	return func(w *bufio.Writer) {
+		log.Println("Serving cache")
+
+		for _, machine := range s.cache {
+			machineJSON, err := machine.MarshalJSON()
+			if err != nil {
+				log.Printf("StreamWriter: cannot convert to json")
+				continue
+			}
+
+			fmt.Fprintf(w, "event: found\n")
+			fmt.Fprintf(w, "data: %s\n\n", machineJSON)
+			err = w.Flush()
+			if err != nil {
+				s.connectedClients--
+				return
+			}
+		}
+
+		s.waitCond.Signal()
+		s.accessMutex.Unlock()
+
+		log.Println("Listening for new events...")
+		for {
+			machine := <-s.foundCh
+			machineJSON, err := machine.MarshalJSON()
+			if err != nil {
+				log.Printf("StreamWriter: cannot convert to json")
+				continue
+			}
+
+			fmt.Fprintf(w, "event: found\n")
+			fmt.Fprintf(w, "data: %s\n\n", machineJSON)
+			err = w.Flush()
+			if err != nil {
+				s.accessMutex.Lock()
+				log.Println("A device disconnected")
+				s.connectedClients--
+				s.accessMutex.Unlock()
+				return
+			}
+		}
+	}
+}
+
+func ARPScannerInstance(networkInterface string) (*ARPScanner, error) {
+	scannersMutex.Lock()
+	defer scannersMutex.Unlock()
+
+	if existingScanners == nil {
+		existingScanners = make(map[string]*ARPScanner)
 	}
 
-	return machines, nil
+	scanner := existingScanners[networkInterface]
+	if scanner == nil {
+		newScanner, err := ARPScannerNew(networkInterface)
+		if err != nil {
+			return nil, err
+		}
+
+		existingScanners[networkInterface] = newScanner
+		return newScanner, nil
+	} else {
+		return scanner, nil
+	}
 }

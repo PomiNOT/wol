@@ -41,16 +41,22 @@ func WakeOnLan(c *fiber.Ctx) error {
 	}
 
 	ifaceInfo, err := GetInterfaceInfo(ifName)
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 
 	client, err := wol.NewClient()
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 
 	err = client.Wake(
 		fmt.Sprintf("%s:9", ifaceInfo.Broadcast.String()),
 		machineInfo.Mac,
 	)
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 
 	return c.JSON(fiber.Map{
 		"message": fmt.Sprintf("Sending wake-up message for %s to %s", machineInfo.Mac, ifaceInfo.Broadcast),
@@ -67,16 +73,19 @@ func DiscoverMachines(c *fiber.Ctx) error {
 		)
 	}
 
-	machines, err := ARPScan(ifName)
+	scanner, err := ARPScannerInstance(ifName)
 
 	if err != nil {
 		return err
 	}
 
-	return c.JSON(fiber.Map{
-		"count": len(machines),
-		"machines": machines,
-	})
+	c.Set("Access-Control-Allow-Origin", "*")
+	c.Set("Content-Type", "text/event-stream")
+	c.Set("Cache-Control", "no-cache")
+	c.Set("Transfer-Encoding", "chunked")
+	c.Context().SetBodyStreamWriter(scanner.StreamWriter())
+
+	return nil
 }
 
 func ErrorHandler(c *fiber.Ctx, err error) error {

@@ -24,7 +24,7 @@ func getPort(defaultPort int) int {
 
 func main() {
 	app := fiber.New(fiber.Config{
-		AppName: "WOL",
+		AppName:      "WOL",
 		ServerHeader: "WOL Backend Server",
 		ErrorHandler: ErrorHandler,
 	})
